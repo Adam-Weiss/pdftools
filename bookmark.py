@@ -10,11 +10,18 @@ bookmarks to a PDF using :mod:`pikepdf`.
 
 from __future__ import annotations
 
-import sys
+import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
-import pikepdf
+try:  # pragma: no cover - exercised in environments with pikepdf available
+    import pikepdf
+except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+    pikepdf = None  # type: ignore[assignment]
+    _PIKEPDF_IMPORT_ERROR = exc
+else:  # pragma: no cover - import guard
+    _PIKEPDF_IMPORT_ERROR = None
 
 
 # ====== CONFIGURE OFFSETS ======
@@ -129,39 +136,53 @@ def phys_from_arabic(n: int) -> int:
     return ARABIC_1_PHYS + (int(n) - 1)
 
 
-def clamp_index(pdf: pikepdf.Pdf, idx: int) -> int:
+def _require_pikepdf() -> "pikepdf":
+    """Return the :mod:`pikepdf` module or raise a helpful error."""
+
+    if pikepdf is None:  # pragma: no cover - depends on environment
+        raise ModuleNotFoundError(
+            "pikepdf is required to manipulate PDF bookmarks."
+        ) from _PIKEPDF_IMPORT_ERROR
+    return pikepdf
+
+
+def clamp_index(pdf: "pikepdf.Pdf", idx: int) -> int:
     """Ensure the page index is within the PDF's page count."""
 
     return max(0, min(idx, len(pdf.pages) - 1))
 
 
-def make_item(pdf: pikepdf.Pdf, title: str, page_index: int) -> pikepdf.OutlineItem:
+def make_item(
+    pdf: "pikepdf.Pdf", title: str, page_index: int
+) -> "pikepdf.OutlineItem":
     """Create an :class:`pikepdf.OutlineItem` for the given page index."""
 
+    pp = _require_pikepdf()
     idx = clamp_index(pdf, page_index)
     page = pdf.pages[idx]
     page_obj = page.obj  # some pikepdf builds require the raw object, not helper
-    dest = pikepdf.Array([page_obj, pikepdf.Name("/Fit")])
+    dest = pp.Array([page_obj, pp.Name("/Fit")])
     # Try modern keyword usage first.
     try:
-        return pikepdf.OutlineItem(title, destination=dest)
+        return pp.OutlineItem(title, destination=dest)
     except TypeError:
         pass
     # Positional fallback.
     try:
-        return pikepdf.OutlineItem(title, dest)
+        return pp.OutlineItem(title, dest)
     except TypeError:
         pass
     # Very old fallback.
     try:
-        return pikepdf.OutlineItem(title, idx)
+        return pp.OutlineItem(title, idx)
     except TypeError:
-        return pikepdf.OutlineItem(title)
+        return pp.OutlineItem(title)
 
 
-def add_outlines(pdf: pikepdf.Pdf) -> None:
+def add_outlines(pdf: "pikepdf.Pdf") -> None:
     """Add the Hevajra bookmarks to ``pdf`` in-place."""
 
+    _require_pikepdf()
     # Hard reset existing outlines (tree will be rebuilt).
     try:
         if "/Outlines" in pdf.Root:
@@ -204,27 +225,60 @@ def add_outlines(pdf: pikepdf.Pdf) -> None:
             )
 
 
-def process(input_path: str, output_path: str) -> None:
-    """Load ``input_path`` and save ``output_path`` with Hevajra bookmarks."""
+def process_file(input_path: Path, output_path: Path | None = None) -> None:
+    """Apply the Hevajra bookmark outline to ``input_path``.
 
-    with pikepdf.Pdf.open(input_path) as pdf:
+    Parameters
+    ----------
+    input_path:
+        Path to the source PDF.
+    output_path:
+        Optional destination path.  When omitted the input file is
+        overwritten in-place.
+    """
+
+    destination = output_path or input_path
+    pp = _require_pikepdf()
+    with pp.open(str(input_path)) as pdf:
         add_outlines(pdf)
-        pdf.save(output_path)
+        pdf.save(str(destination))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the command line argument parser."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "input",
+        type=Path,
+        help="Path to the source PDF that requires the Hevajra outline.",
+    )
+    parser.add_argument(
+        "output",
+        nargs="?",
+        type=Path,
+        help=(
+            "Optional destination path.  When omitted the input file is"
+            " modified in-place."
+        ),
+    )
+    return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point for invoking the bookmark utility."""
+    """Entry-point for the command line interface."""
 
-    args = list(argv or sys.argv[1:])
-    if len(args) != 2:
-        print("Usage: bookmark.py INPUT.pdf OUTPUT.pdf")
-        return 1
+    parser = build_parser()
+    ns = parser.parse_args(argv)
 
-    input_path, output_path = args
-    process(input_path, output_path)
-    print(f"Saved with bookmarks → {output_path}")
+    try:
+        process_file(ns.input, ns.output)
+    except FileNotFoundError as exc:  # pragma: no cover - argument validation
+        parser.error(str(exc))
+    except pikepdf.PdfError as exc:
+        parser.error(str(exc))
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI behaviour
-    sys.exit(main())
+if __name__ == "__main__":  # pragma: no cover - manual invocation
+    raise SystemExit(main())
