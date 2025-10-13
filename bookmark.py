@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Iterable, Sequence
 
-import pikepdf
+try:
+    import pikepdf  # type: ignore[import-not-found]
+except ModuleNotFoundError as _err:  # pragma: no cover - environment guard
+    pikepdf = None  # type: ignore[assignment]
+    _PIKEPDF_IMPORT_ERROR: ModuleNotFoundError | None = _err
+else:
+    _PIKEPDF_IMPORT_ERROR = None
 
 
 # ====== CONFIGURE OFFSETS ======
@@ -129,6 +136,17 @@ def phys_from_arabic(n: int) -> int:
     return ARABIC_1_PHYS + (int(n) - 1)
 
 
+def _require_pikepdf() -> ModuleType:
+    """Return the :mod:`pikepdf` module or raise a helpful error."""
+
+    if pikepdf is None:
+        raise ModuleNotFoundError(
+            "pikepdf is required to manipulate bookmarks. "
+            "Install it with `pip install pikepdf`."
+        ) from _PIKEPDF_IMPORT_ERROR
+    return pikepdf
+
+
 def clamp_index(pdf: pikepdf.Pdf, idx: int) -> int:
     """Ensure the page index is within the PDF's page count."""
 
@@ -138,29 +156,32 @@ def clamp_index(pdf: pikepdf.Pdf, idx: int) -> int:
 def make_item(pdf: pikepdf.Pdf, title: str, page_index: int) -> pikepdf.OutlineItem:
     """Create an :class:`pikepdf.OutlineItem` for the given page index."""
 
+    module = _require_pikepdf()
     idx = clamp_index(pdf, page_index)
     page = pdf.pages[idx]
     page_obj = page.obj  # some pikepdf builds require the raw object, not helper
-    dest = pikepdf.Array([page_obj, pikepdf.Name("/Fit")])
+    dest = module.Array([page_obj, module.Name("/Fit")])
     # Try modern keyword usage first.
     try:
-        return pikepdf.OutlineItem(title, destination=dest)
+        return module.OutlineItem(title, destination=dest)
     except TypeError:
         pass
     # Positional fallback.
     try:
-        return pikepdf.OutlineItem(title, dest)
+        return module.OutlineItem(title, dest)
     except TypeError:
         pass
     # Very old fallback.
     try:
-        return pikepdf.OutlineItem(title, idx)
+        return module.OutlineItem(title, idx)
     except TypeError:
-        return pikepdf.OutlineItem(title)
+        return module.OutlineItem(title)
 
 
 def add_outlines(pdf: pikepdf.Pdf) -> None:
     """Add the Hevajra bookmarks to ``pdf`` in-place."""
+
+    module = _require_pikepdf()
 
     # Hard reset existing outlines (tree will be rebuilt).
     try:
@@ -207,7 +228,9 @@ def add_outlines(pdf: pikepdf.Pdf) -> None:
 def process(input_path: str, output_path: str) -> None:
     """Load ``input_path`` and save ``output_path`` with Hevajra bookmarks."""
 
-    with pikepdf.Pdf.open(input_path) as pdf:
+    module = _require_pikepdf()
+
+    with module.Pdf.open(input_path) as pdf:
         add_outlines(pdf)
         pdf.save(output_path)
 
